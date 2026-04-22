@@ -122,8 +122,8 @@ private:
 
     TextureKind get_texture_kind() const;
 
-    KTX_error_code decode_bcn(span<uint8_t> buff, int level, int layer,
-                              int faceSlice) const;
+    KTX_error_code decode_bcn(int level, int layer, int faceSlice,
+                              BlockCompression bc);
 };
 
 
@@ -673,31 +673,24 @@ KtxInput::seek_subimage(int subimage, int miplevel)
         }
         switch (format_info.compression) {
             /* BCn formats - these can be decoded per-miplvl and subimage*/
-        case BlockCompression::BC1: {
-            size_t required_capacity = width * height * 4;
-            // resize if necessary
-            if (m_buf.size() < required_capacity)
-                m_buf.resize(required_capacity);
-            if (auto status = decode_bcn(m_buf, miplevel, arr_layer, face_slice);
-                status != ktx_error_code_e::KTX_SUCCESS) {
-                errorfmt("failed to decode BC1-compressed texture. "
-                         "decode_bcn returned Ktx error code: {}",
-                         static_cast<uint32_t>(status));
-                return false;
-            }
-            std::cout << "decoded slice successfully" << '\n';
-            m_pitch    = width * 4;
-            m_data_ptr = m_buf.data();
-            break;
-        }
+        case BlockCompression::BC1:
         case BlockCompression::BC2:
         case BlockCompression::BC3:
         case BlockCompression::BC4:
         case BlockCompression::BC5:
         case BlockCompression::BC6HU:
         case BlockCompression::BC6HS:
-        case BlockCompression::BC7:
+        case BlockCompression::BC7: {
+            if (auto status = decode_bcn(miplevel, arr_layer, face_slice,
+                                         format_info.compression);
+                status != KTX_SUCCESS) {
+                errorfmt("failed to decode BCn-compressed texture. "
+                         "decode_bcn returned Ktx error code: {}",
+                         static_cast<uint32_t>(status));
+                return false;
+            }
             break;
+        };
 
             /* ETC formats */
         case BlockCompression::ETC2:
@@ -833,23 +826,17 @@ KtxInput::get_texture_kind() const
 }
 
 KTX_error_code
-KtxInput::decode_bcn(span<uint8_t> buff, int level, int layer,
-                     int faceSlice) const
+KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
 {
-    const size_t nchannels { 4 };
-
-    // No VkFormat checks as this is assumed to called responsibly within
-    // seek_subimage
-    if (!m_tex2->pData) {
-        return KTX_INVALID_OPERATION;
-    }
-
     // All BCn block-compression formats have a block size of 4x4
     constexpr size_t kBlockSize { 4 };
     const size_t width  = std::max(m_tex2->baseWidth >> level, 1u);
     const size_t height = std::max(m_tex2->baseHeight >> level, 1u);
-    // const size_t imageDepths = std::max(This->baseDepth >> level, 1u);
-    const size_t row_pitch = width * nchannels;
+
+    // No VkFormat checks as this is assumed to called responsibly within
+    // seek_subimage
+    if (!m_tex2->pData)
+        return KTX_INVALID_OPERATION;
 
     ktx_size_t offset;
     if (auto status = ktxTexture2_GetImageOffset(m_tex2, level, layer,
@@ -860,30 +847,57 @@ KtxInput::decode_bcn(span<uint8_t> buff, int level, int layer,
 
     const auto* src_blocks = m_tex2->pData + offset;
 
-    // is the span large enough?
-    if (buff.size_bytes() < width * height * nchannels)
-        return KTX_INVALID_VALUE;
+    size_t nchannels { 4 };
+    switch (bc) {
+        /* BC1 and BC3 output R8G8B8A8 data => 4 channels */
+    case BlockCompression::BC1:
+    case BlockCompression::BC3: nchannels = 4; break;
+    default: return KTX_INVALID_VALUE;
+    }
+
+    // is the byte vector large enough? (resize if necessary)
+    size_t required_capacity = width * height * nchannels;
+    if (m_buf.size() < required_capacity)
+        m_buf.resize(required_capacity);
+
+    // if (m_buf.size() < width * height * nchannels)
+    //     return KTX_INVALID_VALUE;
+
+    m_pitch = width * nchannels;
 
     uint8_t rgbai[kBlockSize * kBlockSize * 4];
 
     // Row-major loop over blocks
     for (size_t y { 0 }; y < height; y += kBlockSize) {
         for (size_t x { 0 }; x < width; x += kBlockSize) {
-            // BC1: 8 bytes -> 4 x 4 x 4 = 64 bytes
-            bcdec_bc1(src_blocks, rgbai, kBlockSize * 4);
-            src_blocks += BCDEC_BC1_BLOCK_SIZE;
+            switch (bc) {
+            case BlockCompression::BC1:
+                // BC1: 8 bytes -> 4 x 4 x 4 = 64 bytes
+                bcdec_bc1(src_blocks, rgbai, kBlockSize * 4);
+                src_blocks += BCDEC_BC1_BLOCK_SIZE;
+                break;
+            case BlockCompression::BC3:
+                // BC3: 16 bytes -> 4 x 4 x 4 = 64 bytes
+                bcdec_bc3(src_blocks, rgbai, kBlockSize * 4);
+                src_blocks += BCDEC_BC3_BLOCK_SIZE;
+                break;
+            default: return KTX_INVALID_VALUE;
+            }
 
             const uint8_t* src = rgbai;
-            uint8_t* dst       = buff.data() + y * row_pitch + nchannels * x;
+            uint8_t* dst       = m_buf.data() + y * m_pitch + nchannels * x;
 
+            // LDR formats: uint8
             for (size_t py { 0 }; py < kBlockSize && y + py < height; ++py) {
                 int cols = std::min(kBlockSize, width - x);
                 memcpy(dst, src, cols * nchannels);
                 src += kBlockSize * nchannels;
-                dst += row_pitch;
+                dst += m_pitch;
             }
         }
     }
+
+    m_data_ptr = m_buf.data();
 
     return KTX_SUCCESS;
 }

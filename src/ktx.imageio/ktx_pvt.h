@@ -422,6 +422,26 @@ extract_info_from_format(VkFormat vkformat, FormatInfo& formatinfo)
         };
         return true;
 
+
+    case VK_FORMAT_BC3_UNORM_BLOCK:
+        formatinfo = {
+            .nbrchannels  = 4,
+            .typedesc     = TypeDesc::UINT8,
+            .channelnames = { "R", "G", "B" },
+            .colorspace   = "lin_rec709_scene",
+            .compression  = BlockCompression::BC3,
+        };
+        return true;
+    case VK_FORMAT_BC3_SRGB_BLOCK:
+        formatinfo = {
+            .nbrchannels  = 4,
+            .typedesc     = TypeDesc::UINT8,
+            .channelnames = { "R", "G", "B" },
+            .colorspace   = "srgb_rec709_scene",
+            .compression  = BlockCompression::BC3,
+        };
+        return true;
+
     case VK_FORMAT_BC7_UNORM_BLOCK:
         formatinfo = {
             .nbrchannels  = 1,
