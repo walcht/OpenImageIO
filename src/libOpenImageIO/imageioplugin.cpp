@@ -305,6 +305,7 @@ PLUGENTRY(tiff);
 PLUGENTRY(targa);
 PLUGENTRY(webp);
 PLUGENTRY(zfile);
+PLUGENTRY(ktx);
 
 
 #endif  // defined(EMBED_PLUGINS)
@@ -438,6 +439,10 @@ catalog_builtin_plugins()
 #endif
 #if !defined(DISABLE_ZFILE)
     DECLAREPLUG (zfile);
+#endif
+#if !defined(DISABLE_KTX)
+    DECLAREPLUG_RO (ktx);
+//    DECLAREPLUG (ktx);
 #endif
 #endif
 }
