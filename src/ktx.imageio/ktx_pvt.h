@@ -432,6 +432,7 @@ extract_info_from_format(VkFormat vkformat, FormatInfo& formatinfo)
             .compression  = BlockCompression::BC3,
         };
         return true;
+
     case VK_FORMAT_BC3_SRGB_BLOCK:
         formatinfo = {
             .nbrchannels  = 4,
@@ -439,6 +440,26 @@ extract_info_from_format(VkFormat vkformat, FormatInfo& formatinfo)
             .channelnames = { "R", "G", "B" },
             .colorspace   = "srgb_rec709_scene",
             .compression  = BlockCompression::BC3,
+        };
+        return true;
+
+    case VK_FORMAT_BC5_UNORM_BLOCK:
+        formatinfo = {
+            .nbrchannels  = 2,
+            .typedesc     = TypeDesc::UINT8,
+            .channelnames = { "R", "G" },
+            .colorspace   = "lin_rec709_scene",
+            .compression  = BlockCompression::BC5,
+        };
+        return true;
+
+    case VK_FORMAT_BC5_SNORM_BLOCK:
+        formatinfo = {
+            .nbrchannels  = 2,
+            .typedesc     = TypeDesc::INT8,
+            .channelnames = { "R", "G" },
+            .colorspace   = "lin_rec709_scene",
+            .compression  = BlockCompression::BC5,
         };
         return true;
 

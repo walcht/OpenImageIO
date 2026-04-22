@@ -852,6 +852,7 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
         /* BC1 and BC3 output R8G8B8A8 data => 4 channels */
     case BlockCompression::BC1:
     case BlockCompression::BC3: nchannels = 4; break;
+    case BlockCompression::BC5: nchannels = 2; break;
     default: return KTX_INVALID_VALUE;
     }
 
@@ -880,6 +881,10 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
                 // BC3: 16 bytes -> 4 x 4 x 4 = 64 bytes
                 bcdec_bc3(src_blocks, rgbai, kBlockSize * 4);
                 src_blocks += BCDEC_BC3_BLOCK_SIZE;
+                break;
+            case BlockCompression::BC5:
+                bcdec_bc5(src_blocks, rgbai, kBlockSize * 2);
+                src_blocks += BCDEC_BC5_BLOCK_SIZE;
                 break;
             default: return KTX_INVALID_VALUE;
             }
