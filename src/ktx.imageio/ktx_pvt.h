@@ -463,9 +463,29 @@ extract_info_from_format(VkFormat vkformat, FormatInfo& formatinfo)
         };
         return true;
 
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+        formatinfo = {
+            .nbrchannels  = 3,
+            .typedesc     = TypeDesc::HALF,
+            .channelnames = { "R", "G", "B" },
+            .colorspace   = "lin_rec709_scene",
+            .compression  = BlockCompression::BC6HU,
+        };
+        return true;
+
+    case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+        formatinfo = {
+            .nbrchannels  = 3,
+            .typedesc     = TypeDesc::HALF,
+            .channelnames = { "R", "G", "B" },
+            .colorspace   = "lin_rec709_scene",
+            .compression  = BlockCompression::BC6HS,
+        };
+        return true;
+
     case VK_FORMAT_BC7_UNORM_BLOCK:
         formatinfo = {
-            .nbrchannels  = 1,
+            .nbrchannels  = 4,
             .typedesc     = TypeDesc::UINT8,
             .channelnames = { "R" },
             .colorspace   = "lin_rec709_scene",
@@ -475,7 +495,7 @@ extract_info_from_format(VkFormat vkformat, FormatInfo& formatinfo)
 
     case VK_FORMAT_BC7_SRGB_BLOCK:
         formatinfo = {
-            .nbrchannels  = 3,
+            .nbrchannels  = 4,
             .typedesc     = TypeDesc::UINT8,
             .channelnames = { "R", "G", "B" },
             .colorspace   = "srgb_rec709_scene",

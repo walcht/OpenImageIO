@@ -476,14 +476,18 @@ KtxInput::open(const std::string& name, ImageSpec& newspec)
                          ? VK_FORMAT_R8G8B8A8_SRGB
                          : VK_FORMAT_R8G8B8A8_UNORM;
             break;
-        case BlockCompression::BC2:
+        case BlockCompression::BC2: break;
+        case BlockCompression::BC3:
             format = format_info.colorspace == "srgb_rec709_scene"
                          ? VK_FORMAT_R8G8B8A8_SRGB
                          : VK_FORMAT_R8G8B8A8_UNORM;
             break;
-        case BlockCompression::BC3: break;
         case BlockCompression::BC4: break;
-        case BlockCompression::BC5: break;
+        case BlockCompression::BC5:
+            format = format_info.colorspace == "srgb_rec709_scene"
+                         ? VK_FORMAT_R8G8_SRGB
+                         : VK_FORMAT_R8G8_UNORM;
+            break;
         case BlockCompression::BC6HU: break;
         case BlockCompression::BC6HS: break;
         case BlockCompression::BC7:
@@ -848,11 +852,18 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
     const auto* src_blocks = m_tex2->pData + offset;
 
     size_t nchannels { 4 };
+    bool is_hdr { false };
     switch (bc) {
         /* BC1 and BC3 output R8G8B8A8 data => 4 channels */
     case BlockCompression::BC1:
-    case BlockCompression::BC3: nchannels = 4; break;
+    case BlockCompression::BC3:
+    case BlockCompression::BC7: nchannels = 4; break;
     case BlockCompression::BC5: nchannels = 2; break;
+    case BlockCompression::BC6HU:
+    case BlockCompression::BC6HS:
+        nchannels = 3;
+        is_hdr    = true;
+        break;
     default: return KTX_INVALID_VALUE;
     }
 
@@ -867,6 +878,7 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
     m_pitch = width * nchannels;
 
     uint8_t rgbai[kBlockSize * kBlockSize * 4];
+    uint16_t rgbh[kBlockSize * kBlockSize * 3];
 
     // Row-major loop over blocks
     for (size_t y { 0 }; y < height; y += kBlockSize) {
@@ -883,21 +895,47 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
                 src_blocks += BCDEC_BC3_BLOCK_SIZE;
                 break;
             case BlockCompression::BC5:
+                // BC5: 16 bytes -> 4 x 4 x 2 = 32 bytes
                 bcdec_bc5(src_blocks, rgbai, kBlockSize * 2);
                 src_blocks += BCDEC_BC5_BLOCK_SIZE;
+                break;
+            case BlockCompression::BC6HU:
+            case BlockCompression::BC6HS:
+                bcdec_bc6h_half(src_blocks, rgbh, kBlockSize * 3,
+                                bc == BlockCompression::BC6HS);
+                src_blocks += BCDEC_BC6H_BLOCK_SIZE;
+                break;
+            case BlockCompression::BC7:
+                // BC7: 16 bytes -> 4 x 4 x 4 = 64 bytes
+                bcdec_bc7(src_blocks, rgbai, kBlockSize * 4);
+                src_blocks += BCDEC_BC7_BLOCK_SIZE;
                 break;
             default: return KTX_INVALID_VALUE;
             }
 
-            const uint8_t* src = rgbai;
-            uint8_t* dst       = m_buf.data() + y * m_pitch + nchannels * x;
-
-            // LDR formats: uint8
-            for (size_t py { 0 }; py < kBlockSize && y + py < height; ++py) {
-                int cols = std::min(kBlockSize, width - x);
-                memcpy(dst, src, cols * nchannels);
-                src += kBlockSize * nchannels;
-                dst += m_pitch;
+            // TODO: just compress this directly into m_buff (it should be able
+            // to hold (4 * pgcd(width, 4)) * (4 * pgcd(height, 4))
+            int cols = std::min(kBlockSize, width - x);
+            if (is_hdr) {
+                const uint16_t* src = rgbh;
+                uint16_t* dst       = reinterpret_cast<uint16_t*>(m_buf.data())
+                                      + y * m_pitch + nchannels * x;
+                for (size_t py { 0 }; py < kBlockSize && y + py < height;
+                     py++) {
+                    memcpy(dst, src, cols * nchannels * 2);
+                    src += kBlockSize * nchannels;
+                    dst += m_pitch;
+                }
+            } else /* LDR */ {
+                const uint8_t* src = rgbai;
+                uint8_t* dst       = m_buf.data() + y * m_pitch + nchannels * x;
+                int cols           = std::min(kBlockSize, width - x);
+                for (size_t py { 0 }; py < kBlockSize && y + py < height;
+                     ++py) {
+                    memcpy(dst, src, cols * nchannels);
+                    src += kBlockSize * nchannels;
+                    dst += m_pitch;
+                }
             }
         }
     }
