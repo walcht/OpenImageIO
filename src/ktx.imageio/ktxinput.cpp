@@ -3,14 +3,17 @@
 
 #include "OpenImageIO/span.h"
 #include "ktx_pvt.h"
-#include "vkformat.h"
 #include <iostream>
 #include <ktx.h>
 #include <optional>
 
+// TODO: this needs proper handling (with regards to DDS format)
 // bcdec implementation is already included in dds format (dds.imageio)
 // #define BCDEC_IMPLEMENTATION
 #include "bcdec.h"
+
+#define ETCDEC_IMPLEMENTATION
+#include "etcdec.h"
 
 // N.B. The class definition for KtxInput is in ktx_pvt.h.
 
@@ -26,20 +29,11 @@ public:
         return (
             // as per the KTX1/2 specs:
             // https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html#_keyvalue_data
-            feature == "arbitrary_metadata" ||
-            // prob not - TODO: verify
-            // feature == "exif" ||
-            // prob not - TODO: verify
-            // feature == "iptc" ||
-            // prob not - TODO: verify
-            // feature == "ioproxy" ||
+            feature == "arbitrary_metadata" || feature == "ioproxy" ||
             /* ktx supports 3D textures, cubmap textures, texture arrays, etc. */
             feature == "multiimage" ||
-            /* not sure ... this naming is confusing */
-            feature == "mipmap"
-            /* TODO: verify */
-            // feature == "noimage"
-        );
+            /* ktx supports storage of mipmaps */
+            feature == "mipmap");
     }
 
     bool valid_file(Filesystem::IOProxy* ioproxy) const override;
@@ -124,6 +118,9 @@ private:
 
     KTX_error_code decode_bcn(int level, int layer, int faceSlice,
                               BlockCompression bc);
+
+    KTX_error_code decode_etc(int level, int layer, int faceSlice,
+                              BlockCompression etc_cmp);
 };
 
 
@@ -434,14 +431,26 @@ KtxInput::open(const std::string& name, ImageSpec& newspec)
     //      TODO
     //
     if (m_tex2->vkFormat == VK_FORMAT_UNDEFINED) {
-        // check case (4) - color model
+        // TODO: check case (4) - color model
 
         // check case (3) - non-Vulkan GPU formats (here we simply map these
         // formats to VkFormat and call it a day)
         if (m_glFormat.has_value()) {
-            m_glFormat.value();
+            // TODO: add glformat support
+            errorfmt("Loading KTX textures with OpenGL formats but no vkFormat "
+                     "(i.e., VK_FORMAT_UNDEFINED) is currently not supported");
+            return false;
         } else if (m_dxgiFormat.has_value()) {
+            // TODO: add direct3d format support
+            errorfmt(
+                "Loading KTX textures with Direct3D formats but no vkFormat "
+                "(i.e., VK_FORMAT_UNDEFINED) is currently not supported");
+            return false;
         } else if (m_metalFormat.has_value()) {
+            // TODO: add metal format support
+            errorfmt("Loading KTX textures with Metal formats but no vkFormat "
+                     "(i.e., VK_FORMAT_UNDEFINED) is currently not supported");
+            return false;
         }
 
         // error for other cases (case (2) should not occur and case (1) is
@@ -454,7 +463,15 @@ KtxInput::open(const std::string& name, ImageSpec& newspec)
     }
 
     //
-    // If this texture is GPU block compressed using ASTC then use libktx to
+    // In case this KTX texture is GPU block compressed, we need to map its
+    // VkFormat to the corresponding decompressed VkFormat.
+    //
+    //  E.g., VK_FORMAT_BC7_SRGB_BLOCK --> VK_FORMAT_R8G8B8A8_SRGB
+    //
+    // We do this so that we can save the correct crucial stats in the spec
+    // (e.g., nchannels, colorspace, typedesc, etc.).
+    //
+    // If this texture is GPU block compressed using ASTC then we use libktx to
     // decode all of it (this is just used until a more efficient alternative
     // is implemented).
     //
@@ -472,26 +489,32 @@ KtxInput::open(const std::string& name, ImageSpec& newspec)
         switch (format_info.compression) {
             // BCn decompression happens in seek_subimage
         case BlockCompression::BC1:
-            format = format_info.colorspace == "srgb_rec709_scene"
-                         ? VK_FORMAT_R8G8B8A8_SRGB
-                         : VK_FORMAT_R8G8B8A8_UNORM;
-            break;
-        case BlockCompression::BC2: break;
         case BlockCompression::BC3:
+        case BlockCompression::BC7:
             format = format_info.colorspace == "srgb_rec709_scene"
                          ? VK_FORMAT_R8G8B8A8_SRGB
                          : VK_FORMAT_R8G8B8A8_UNORM;
             break;
-        case BlockCompression::BC4: break;
         case BlockCompression::BC5:
             format = format_info.colorspace == "srgb_rec709_scene"
                          ? VK_FORMAT_R8G8_SRGB
                          : VK_FORMAT_R8G8_UNORM;
             break;
-        case BlockCompression::BC6HU: break;
-        case BlockCompression::BC6HS: break;
-        case BlockCompression::BC7:
+        case BlockCompression::BC6HU:
+        case BlockCompression::BC6HS:
+            format = VK_FORMAT_R8G8B8_UNORM;
             break;
+
+            // ETC2_RGB is also decompressed into 4 channels with alpha set to
+            // 255 (i.e., opaque)
+        case BlockCompression::ETC2_RGB:
+        case BlockCompression::ETC2_RGB_A1:
+        case BlockCompression::ETC2_RGBA:
+            format = format_info.colorspace == "srgb_rec709_scene"
+                         ? VK_FORMAT_R8G8B8A8_SRGB
+                         : VK_FORMAT_R8G8B8A8_UNORM;
+            break;
+
 
             // ASTC decompression occurs here because libktx only allows use to
             // decode the whole texture (i.e., all miplevels + subimages)
@@ -517,7 +540,11 @@ KtxInput::open(const std::string& name, ImageSpec& newspec)
             format = static_cast<VkFormat>(m_tex2->vkFormat);
         } break;
 
-        default: return false;
+        default:
+            errorfmt(
+                "This GPU block compression format is currently not supported: {}",
+                block_compression_name(format_info.compression));
+            return false;
         }
     }
 
@@ -543,10 +570,9 @@ KtxInput::open(const std::string& name, ImageSpec& newspec)
         m_spec.set_colorspace(format_info.colorspace);
     }
 
-    if (!seek_subimage(0, 0)) {
-        errorfmt("seek_subimage(subimage: 0, miplevel: 0) failed");
+    if (!seek_subimage(0, 0))
+        // errorfmt is set via seek_subimage
         return false;
-    }
 
     // for set of, see:
     //  https://github.com/KhronosGroup/KTX-Software/blob/main/external/dfdutils/KHR/khr_df.h
@@ -603,6 +629,9 @@ KtxInput::seek_subimage(int subimage, int miplevel)
 
     // before doing any calls, check if provided subimage and mip lvl are valid
     if (subimage < 0 || miplevel < 0) {
+        errorfmt(
+            "provided miplevel and/or subimage values are invalid: miplevel={}; subimage={}",
+            miplevel, subimage);
         return false;
     }
 
@@ -664,7 +693,7 @@ KtxInput::seek_subimage(int subimage, int miplevel)
     //          to do a per-miplvl and per-subimage decode hence why we don't
     //          decode here but rather in seek_subimage.
     //
-    //    EAC:  TODO
+    //    PVRTC:  TODO
     //
     if (m_tex2->isCompressed /* i.e., is GPU block compressed? */) {
         FormatInfo format_info;
@@ -689,7 +718,7 @@ KtxInput::seek_subimage(int subimage, int miplevel)
                                          format_info.compression);
                 status != KTX_SUCCESS) {
                 errorfmt("failed to decode BCn-compressed texture. "
-                         "decode_bcn returned Ktx error code: {}",
+                         "decode_bcn returned KTX error code: {}",
                          static_cast<uint32_t>(status));
                 return false;
             }
@@ -697,9 +726,18 @@ KtxInput::seek_subimage(int subimage, int miplevel)
         };
 
             /* ETC formats */
-        case BlockCompression::ETC2:
-            // TODO: implement ktxTexture2_DecodeETC
-            return false;
+        case BlockCompression::ETC2_RGB:
+        case BlockCompression::ETC2_RGB_A1:
+        case BlockCompression::ETC2_RGBA:
+            if (auto status = decode_etc(miplevel, arr_layer, face_slice,
+                                         format_info.compression);
+                status != KTX_SUCCESS) {
+                errorfmt("failed to decode ETC-compressed texture. "
+                         "decode_etc returned KTX error code: {}",
+                         static_cast<uint32_t>(status));
+                return false;
+            }
+            break;
 
         default: {
             errorfmt("unknown GPU block compression format: {}",
@@ -783,11 +821,11 @@ KtxInput::read_native_scanlines(int subimage, int miplevel, int ybegin,
 bool
 OpenImageIO::KtxInput::valid_file(Filesystem::IOProxy* ioproxy) const
 {
-    // Check magic number to assure this is a JPEG file
+    // Check magic number to assure this is a KTX2 file
     if (!ioproxy || ioproxy->mode() != Filesystem::IOProxy::Read)
         return false;
 
-    // per KTX specs: the first 12 bytes of a KTX file are used to identify it
+    // per KTX2 specs: the first 12 bytes of a KTX2 file are used to identify it
     uint8_t magic[12] { };
     const size_t numRead = ioproxy->pread(magic, sizeof(magic), 0);
 
@@ -880,6 +918,7 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
     uint8_t rgbai[kBlockSize * kBlockSize * 4];
     uint16_t rgbh[kBlockSize * kBlockSize * 3];
 
+    // TODO: multithreading? (parallel for)
     // Row-major loop over blocks
     for (size_t y { 0 }; y < height; y += kBlockSize) {
         for (size_t x { 0 }; x < width; x += kBlockSize) {
@@ -929,13 +968,87 @@ KtxInput::decode_bcn(int level, int layer, int faceSlice, BlockCompression bc)
             } else /* LDR */ {
                 const uint8_t* src = rgbai;
                 uint8_t* dst       = m_buf.data() + y * m_pitch + nchannels * x;
-                int cols           = std::min(kBlockSize, width - x);
                 for (size_t py { 0 }; py < kBlockSize && y + py < height;
                      ++py) {
                     memcpy(dst, src, cols * nchannels);
                     src += kBlockSize * nchannels;
                     dst += m_pitch;
                 }
+            }
+        }
+    }
+
+    m_data_ptr = m_buf.data();
+
+    return KTX_SUCCESS;
+}
+
+
+KTX_error_code
+KtxInput::decode_etc(int level, int layer, int faceSlice,
+                     BlockCompression etc_cmp)
+{
+    // All ETC block-compression formats have a block size of 4x4
+    constexpr size_t kBlockSize { 4 };
+    const int nchannels = m_spec.nchannels;
+
+    const size_t width  = std::max(m_tex2->baseWidth >> level, 1u);
+    const size_t height = std::max(m_tex2->baseHeight >> level, 1u);
+
+    if (!m_tex2->pData)
+        return KTX_INVALID_OPERATION;
+
+    // Get source uint8_t pointer to where we are going to read compressed
+    // blocks from
+    ktx_size_t offset;
+    if (auto status = ktxTexture2_GetImageOffset(m_tex2, level, layer,
+                                                 faceSlice, &offset);
+        status != KTX_SUCCESS) {
+        return status;
+    }
+    const auto* src_blocks = m_tex2->pData + offset;
+
+
+    // is the byte vector large enough? (resize if necessary)
+    size_t required_capacity = width * height * nchannels;
+    if (m_buf.size() < required_capacity)
+        m_buf.resize(required_capacity);
+
+    // if (m_buf.size() < width * height * nchannels)
+    //     return KTX_INVALID_VALUE;
+
+    m_pitch = width * nchannels;
+
+    uint8_t rgbai[kBlockSize * kBlockSize * 4];
+
+    // Row-major loop over blocks
+    for (size_t y { 0 }; y < height; y += kBlockSize) {
+        for (size_t x { 0 }; x < width; x += kBlockSize) {
+            switch (etc_cmp) {
+            case BlockCompression::ETC2_RGB:
+                etcdec_etc_rgb(src_blocks, rgbai, kBlockSize * nchannels);
+                src_blocks += ETCDEC_ETC_RGB_BLOCK_SIZE;
+                break;
+            case BlockCompression::ETC2_RGB_A1:
+                etcdec_etc_rgb_a1(src_blocks, rgbai, kBlockSize * nchannels);
+                src_blocks += ETCDEC_ETC_RGB_A1_BLOCK_SIZE;
+                break;
+            case BlockCompression::ETC2_RGBA:
+                etcdec_eac_rgba(src_blocks, rgbai, kBlockSize * nchannels);
+                src_blocks += ETCDEC_EAC_RGBA_BLOCK_SIZE;
+                break;
+            default: return KTX_INVALID_VALUE;
+            }
+
+            // TODO: just compress this directly into m_buff (it should be able
+            // to hold (4 * pgcd(width, 4)) * (4 * pgcd(height, 4))
+            const uint8_t* src = rgbai;
+            uint8_t* dst       = m_buf.data() + y * m_pitch + nchannels * x;
+            int cols           = std::min(kBlockSize, width - x);
+            for (size_t py { 0 }; py < kBlockSize && y + py < height; ++py) {
+                memcpy(dst, src, cols * nchannels);
+                src += kBlockSize * nchannels;
+                dst += m_pitch;
             }
         }
     }

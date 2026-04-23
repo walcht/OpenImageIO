@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # https://github.com/AcademySoftwareFoundation/OpenImageIO
 
-if (ON)
+if (Ktx_FOUND)
     # use same bcdec.h header file (BCn decompression library) as one in dds.imageio
-    add_oiio_plugin (ktxinput.cpp
+    add_oiio_plugin (ktxinput.cpp ktx_pvt.cpp
                      LINK_LIBRARIES ktx
-                     INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src/dds.imageio)
-                   # DEFINITIONS "USE_DCMTK=1")
+                     INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src/dds.imageio
+                     DEFINITIONS "USE_KTX=1")
 else ()
   message (WARNING "KTX plugin will not be built, no libktx")
 endif ()
